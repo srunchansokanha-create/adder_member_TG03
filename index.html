@@ -479,29 +479,27 @@ progress.style.width = Math.min(100, (total / totalMembers * 100)) + "%"
 
         const result = await res.json()
 
-        if (result.status === "success") {
+        // ===== AFTER fetch("/add-member") =====
+if (result.status === "success") {
     log(`${userKey} → SUCCESS`, userKey, "lime")
     processResult("success")
-    // ✅ Delay only for success
     await countdown(20, "Next account delay")
     accIndex = (accIndex + 1) % Object.keys(accounts).length
     added = true
 } else if (result.reason && result.reason.toLowerCase().includes("flood")) {
-    // FloodWait → no countdown
     let match = result.reason.match(/(\d+)/)
     let waitSec = match ? Number(match[1]) : 60
     acc.floodWaitUntil = Date.now() + waitSec * 1000
     acc.status = "floodwait"
+
     let timeStr = new Date(acc.floodWaitUntil).toLocaleString('en-US', { hour12: true })
     log(`⚠️ ${acc.phone || acc.id} Flood → ${timeStr}`, userKey, "orange")
-    // ❌ Skip countdown, continue to next account
+
     accIndex = (accIndex + 1) % Object.keys(accounts).length
 } else {
-    // Failed → no countdown
-    const reason = result.reason || "Unknown / Network Error / Privacy Restriction"
+    const reason = result.reason || "Unknown Error"
     log(`${userKey} → FAILED | Reason: ${reason}`, userKey, "red")
     processResult("failed")
-    // ❌ Skip countdown, continue to next account
     accIndex = (accIndex + 1) % Object.keys(accounts).length
     added = true
 }
