@@ -429,11 +429,11 @@ startBtn.onclick = async () => {
     document.getElementById("skippedCount").innerText = skippedCount
   }
 
-  function processResult(status) {
+  function processResult(status, totalMembers=1) {
     updateSummary(status)
     total++
     counter.innerText = total
-   progress.style.width = Math.min(100, (total / totalMembers) * 100) + "%"
+    progress.style.width = Math.min(100, (total / totalMembers) * 100) + "%"
   }
 
   let accounts = await getAccounts()
@@ -452,7 +452,7 @@ startBtn.onclick = async () => {
     return null
   }
 
-  async function addWithRotation(member) {
+  async function addWithRotation(member, totalMembers) {
     const userKey = member.username || member.user_id
     let added = false
 
@@ -474,9 +474,8 @@ startBtn.onclick = async () => {
         status.innerText = `⚠️ All accounts Flood wait, auto resume at ${timeStr}`
         consoleBox.innerHTML += `<p style="color:red;">⚠️ All accounts Flood wait → ${timeStr}</p>`
 
-        // ✅ wait until first account available
         await new Promise(r => setTimeout(r, waitMs))
-        continue // try again after wait
+        continue
       }
 
       let acc = accObj.acc
@@ -496,7 +495,7 @@ startBtn.onclick = async () => {
 
         if (result.status === "success") {
           log(`${userKey} → SUCCESS`, userKey, "lime")
-          processResult("success")
+          processResult("success", totalMembers)
           await countdown(20, "Next account delay")
           accIndex = (accIndex + 1) % Object.keys(accounts).length
           added = true
@@ -512,14 +511,14 @@ startBtn.onclick = async () => {
           accIndex = (accIndex + 1) % Object.keys(accounts).length
         } else {
           log(`${userKey} → FAILED`, userKey, "red")
-          processResult("failed")
+          processResult("failed", totalMembers)
           accIndex = (accIndex + 1) % Object.keys(accounts).length
           added = true
         }
 
       } catch (err) {
         log(`❌ Error: ${err.message}`, userKey, "red")
-        processResult("failed")
+        processResult("failed", totalMembers)
         accIndex = (accIndex + 1) % Object.keys(accounts).length
         added = true
       }
@@ -549,12 +548,13 @@ startBtn.onclick = async () => {
       const members = data.members || []
       if (!members.length) break
       offset = data.nextOffset
+      const totalMembers = members.length
 
       for (const m of members) {
         const userKey = m.user_id || m.username
         if (historySet.has(userKey)) {
           log(`⏭️ Skipped ${userKey}`, userKey, "orange")
-          processResult("skipped")
+          processResult("skipped", totalMembers)
           continue
         }
         await addWithRotation({
@@ -562,7 +562,7 @@ startBtn.onclick = async () => {
           user_id: m.user_id,
           access_hash: m.access_hash,
           targetGroup: target
-        })
+        }, totalMembers)
       }
     }
   }
@@ -573,14 +573,15 @@ startBtn.onclick = async () => {
   else {
     status.innerText = "Adding..."
     const userList = sourceValue.split("\n").map(u => u.trim()).filter(u => u)
+    const totalMembers = userList.length
 
     for (const u of userList) {
       if (historySet.has(u)) {
         log(`⏭️ Skipped ${u}`, u, "orange")
-        processResult("skipped")
+        processResult("skipped", totalMembers)
         continue
       }
-      await addWithRotation({ username: u, targetGroup: target })
+      await addWithRotation({ username: u, targetGroup: target }, totalMembers)
     }
   }
 
