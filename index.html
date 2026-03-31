@@ -365,39 +365,16 @@ function nextAccount(data,startIndex){
 }
 
 async function autoJoinAllAccounts(group){
-  const accounts = await getAccounts()
-
+  const accounts=await getAccounts()
   for(const key of Object.keys(accounts)){
-    const acc = accounts[key]
-    if(acc.status !== "active") continue
-
-    status.innerText = `Joining ${group} → ${acc.phone || acc.id}`
-
+    const acc=accounts[key]
+    if(acc.status!=="active") continue
     try{
-      const res = await fetch("/auto-join",{
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({group,account:key})
-      })
-
-      const result = await res.json()
-
-      if(result.status === "success"){
-        log(`✅ ${acc.phone || acc.id} joined ${group}`, null, "lime")
-      }else if(result.status === "already"){
-        log(`⏭️ ${acc.phone || acc.id} already in ${group}`, null, "orange")
-      }else{
-        log(`❌ ${acc.phone || acc.id} failed → ${result.reason}`, null, "red")
-      }
-
+      await fetch("/auto-join",{method:"POST",headers:{"Content-Type":"application/json"},body: JSON.stringify({group,account:key})})
+      log(`✅ ${acc.phone||acc.id} joined ${group}`)
       await new Promise(r=>setTimeout(r,500))
-
-    }catch(e){
-      log(`❌ ${acc.phone || acc.id} error: ${e.message}`, null, "red")
-    }
+    }catch(e){ log(`❌ ${acc.phone||acc.id} failed: ${e.message}`) }
   }
-
-  status.innerText = `Join completed ✅`
 }
 
 const loadingBarWrapper = document.getElementById("loadingBarWrapper")
@@ -483,14 +460,14 @@ progress.style.width = Math.min(100, (total / totalMembers * 100)) + "%"
         consoleBox.innerHTML += `<p style="color:red;">⚠️ All accounts Flood wait → ${timeStr}</p>`
 
         // ✅ wait until first account available
-        await new Promise(r => setTimeout(r, waitMs))
+      await countdown(Math.ceil(waitMs / 1000), "⏳ Waiting FloodWait")
         continue // try again after wait
       }
 
       let acc = accObj.acc
       accIndex = accObj.index
 
-      status.innerText = `Adding: ${userKey}`
+      status.innerText = `🚀 Adding ${userKey} using ${acc.phone || acc.id}`
       log(`🔹 Using ${acc.phone || acc.id} → ${userKey}`, userKey, "cyan")
 
       try {
@@ -590,8 +567,8 @@ if (result.status === "success") {
   // TEXT MODE
   // ===============================
   else {
-    status.innerText = "Joining target group..."
-    await autoJoinAllAccounts(target)
+     status.innerText = "Starting add by username..."
+    
 const userList = lines.map(u => {
   if (u.includes("t.me/")) return u.split("/").pop().trim()
   return u.replace(/@/g, "").trim()
@@ -601,9 +578,9 @@ totalMembers = userList.length // ✅ update total members
 
    for (const raw of userList) {
   const u = raw.trim()
-  const cleanU = u.replace(/@/g, "")
+  const cleanU = u.replace(/@/g, "").toLowerCase()
 
-  if (historySet.has(u) || historySet.has(cleanU)) {
+  if (historySet.has(u.toLowerCase()) || historySet.has(cleanU.toLowerCase())) {
     log(`⏭️ Skipped ${u}`, u, "orange")
     processResult("skipped")
     continue
