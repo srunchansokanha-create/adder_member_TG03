@@ -27,9 +27,20 @@ const clients = {}
 // ===== Normalize Username =====
 function normalizeUsername(input){
   if(!input) return null
+
   let u = input.trim()
-  if(u.includes("t.me/")) u = u.split("/").pop()
-  return u.replace("@","").trim()
+
+  // Remove t.me/ prefix
+  if(u.includes("t.me/")) {
+    u = u.split("/").pop()
+  }
+
+  // Remove leading @ (optional, depends on usage)
+  if(u.startsWith("@")) {
+    u = u.slice(1)
+  }
+
+  return u
 }
 
 // ===== Normalize Group =====
@@ -372,115 +383,88 @@ app.post('/members', async (req, res) => {
 // ===== Add Member with input validation =====
 app.post('/add-member', async(req,res)=>{
   try{
-    let {username,user_id,access_hash,targetGroup}=req.body
+    let {username, user_id, access_hash, targetGroup} = req.body
 
-    // ===== Input Validation =====
-    if(!username && !user_id){
-      return res.json({
-        status:"failed",
-        reason:"Missing username or user_id",
-        accountUsed:"none"
-      })
+    // ===== Multi-line support =====
+    const usernames = username ? username.split("\n").map(u=>u.trim()).filter(Boolean) : []
+
+    if(usernames.length === 0 && !user_id){
+      return res.json({status:"failed", reason:"Missing username or user_id", accountUsed:"none"})
     }
 
-    if(username && !/^@?[a-zA-Z0-9_]+$|https:\/\/t\.me\/[a-zA-Z0-9_]+/.test(username)){
-      return res.json({
-        status:"failed",
-        reason:"Invalid username or link. Use @username or https://t.me/username",
-        accountUsed:"none"
-      })
-    }
+    const results = []
 
-    const acc=getAvailableAccount()
-    if(!acc) return res.json({status:"failed",reason:"All FloodWait",accountUsed:"none"})
+    for(const u of usernames){
+      // ===== Validate =====
+      if(!/^(@[a-zA-Z0-9_]+|https:\/\/t\.me\/[a-zA-Z0-9_]+)$/.test(u)){
+        results.push({input:u, status:"failed", reason:"Invalid username or link", accountUsed:"none"})
+        continue
+      }
 
-    const client=await getClient(acc)
-    await autoJoin(client,targetGroup)
+      // ===== Normalize =====
+      const cleanUsername = normalizeUsername(u)
 
-    const cleanUsername = normalizeUsername(username)
+      // ===== Get Account =====
+      const acc = getAvailableAccount()
+      if(!acc){
+        results.push({input:u, status:"failed", reason:"All accounts FloodWait", accountUsed:"none"})
+        continue
+      }
 
-    // ===== Check Duplicate =====
-    const historySnap = await get(ref(db,'history'))
-    const historyData = historySnap.val() || {}
+      const client = await getClient(acc)
+      await autoJoin(client, targetGroup)
 
-    const exists = Object.values(historyData).some(h =>
-      h.username === cleanUsername || h.user_id === user_id
-    )
+      let status="failed", reason="unknown", saveHistory=false
 
-    if(exists){
-      return res.json({
-        status:"skipped",
-        reason:"Already in history",
-        accountUsed:acc.phone||acc.id
-      })
-    }
+      try{
+        const userEntity = await client.getEntity(cleanUsername)
+        const groupEntity = await client.getEntity(targetGroup)
 
-    let status="failed", reason="unknown"
-    let saveHistory = false // only save success or FloodWait
+        await client.invoke(new Api.channels.InviteToChannel({
+          channel:groupEntity,
+          users:[userEntity]
+        }))
 
-    try{
-      let userEntity
+        status="success"
+        reason="joined"
+        saveHistory=true
 
-      if(cleanUsername){
-        userEntity = await client.getEntity(cleanUsername)
-      }else{
-        userEntity = new Api.InputUser({
-          userId:user_id,
-          accessHash:BigInt(access_hash)
+        acc.addCount = (acc.addCount||0)+1
+        await update(ref(db,`accounts/${acc.id}`),{addCount:acc.addCount})
+
+      }catch(err){
+        const wait=parseFlood(err)
+        if(wait){
+          const until=Date.now()+wait*1000
+          acc.floodWaitUntil=until
+          acc.status="floodwait"
+          await update(ref(db,`accounts/${acc.id}`),{status:"floodwait", floodWaitUntil:until})
+          reason=`FloodWait ${wait}s`
+          saveHistory=true
+        }else{
+          reason=err.message
+        }
+      }
+
+      // ===== Save History =====
+      if(saveHistory){
+        await push(ref(db,'history'),{
+          username:cleanUsername,
+          status,
+          reason,
+          accountUsed:acc.phone||acc.id,
+          timestamp:Date.now()
         })
       }
 
-      const group=await client.getEntity(targetGroup)
-
-      await client.invoke(new Api.channels.InviteToChannel({
-        channel:group,
-        users:[userEntity]
-      }))
-
-      status="success"
-      reason="joined"
-      saveHistory = true
-
-      acc.addCount = (acc.addCount||0)+1
-      await update(ref(db,`accounts/${acc.id}`),{addCount:acc.addCount})
-
-      await sleep(30000 + Math.floor(Math.random()*10000))
-
-    }catch(err){
-      const wait=parseFlood(err)
-      if(wait){
-        const until=Date.now()+wait*1000
-        acc.floodWaitUntil=until
-        acc.status="floodwait"
-
-        await update(ref(db,`accounts/${acc.id}`),{
-          status:"floodwait",
-          floodWaitUntil:until
-        })
-
-        reason=`FloodWait ${wait}s | Ready ${new Date(until).toLocaleString()}`
-        saveHistory = true
-      }else{
-        reason=err.message
-        saveHistory = false
-      }
+      results.push({input:u, status, reason, accountUsed:acc.phone||acc.id})
+      await sleep(2000)
     }
 
-    if(saveHistory){
-      await push(ref(db,'history'),{
-        username:cleanUsername || username,
-        user_id,
-        status,
-        reason,
-        accountUsed:acc.phone||acc.id,
-        timestamp:Date.now()
-      })
-    }
-
-    res.json({status,reason,accountUsed:acc.phone||acc.id})
+    res.json(results)
 
   }catch(err){
-    res.json({status:"failed",reason:err.message,accountUsed:"unknown"})
+    res.json({status:"failed", reason:err.message, accountUsed:"unknown"})
   }
 })
 
