@@ -354,7 +354,7 @@ app.post('/members', async (req, res) => {
       .map(p => ({
         user_id: p.id,
         username: p.username,
-        access_hash: p.access_hash ? p.access_hash.toString() : null
+        access_hash: p.access_hash
       }))
 
     res.json({
@@ -370,128 +370,119 @@ app.post('/members', async (req, res) => {
 
 // ===== Add Member =====
 // ===== Add Member with input validation =====
-app.post('/add-member', async (req, res) => {
-  try {
-    let { username, user_id, access_hash, targetGroup } = req.body;
+app.post('/add-member', async(req,res)=>{
+  try{
+    let {username,user_id,access_hash,targetGroup}=req.body
 
     // ===== Input Validation =====
-    if (!username && !user_id) {
+    if(!username && !user_id){
       return res.json({
-        status: "failed",
-        reason: "Missing username or user_id",
-        accountUsed: "none"
-      });
+        status:"failed",
+        reason:"Missing username or user_id",
+        accountUsed:"none"
+      })
     }
 
-    if (username && !/^@?[a-zA-Z0-9_]+$|https:\/\/t\.me\/[a-zA-Z0-9_]+/.test(username)) {
+    if(username && !/^@?[a-zA-Z0-9_]+$|https:\/\/t\.me\/[a-zA-Z0-9_]+/.test(username)){
       return res.json({
-        status: "failed",
-        reason: "Invalid username or link. Use @username or https://t.me/username",
-        accountUsed: "none"
-      });
+        status:"failed",
+        reason:"Invalid username or link. Use @username or https://t.me/username",
+        accountUsed:"none"
+      })
     }
 
-    // ===== Get available account =====
-    const acc = getAvailableAccount();
-    if (!acc) return res.json({ status: "failed", reason: "All FloodWait", accountUsed: "none" });
+    const acc=getAvailableAccount()
+    if(!acc) return res.json({status:"failed",reason:"All FloodWait",accountUsed:"none"})
 
-    const client = await getClient(acc);
-    await autoJoin(client, targetGroup);
+    const client=await getClient(acc)
+    await autoJoin(client,targetGroup)
 
-    const cleanUsername = username ? username.replace("@", "").trim() : null;
+    const cleanUsername = normalizeUsername(username)
 
-    // ===== Check history duplicate =====
-    const historySnap = await get(ref(db, 'history'));
-    const historyData = historySnap.val() || {};
+    // ===== Check Duplicate =====
+    const historySnap = await get(ref(db,'history'))
+    const historyData = historySnap.val() || {}
 
     const exists = Object.values(historyData).some(h =>
       h.username === cleanUsername || h.user_id === user_id
-    );
+    )
 
-    if (exists) {
+    if(exists){
       return res.json({
-        status: "skipped",
-        reason: "Already in history",
-        accountUsed: acc.phone || acc.id
-      });
+        status:"skipped",
+        reason:"Already in history",
+        accountUsed:acc.phone||acc.id
+      })
     }
 
-    let status = "failed";
-    let reason = "unknown";
-    let saveHistory = false;
+    let status="failed", reason="unknown"
+    let saveHistory = false // only save success or FloodWait
 
-    try {
-      let userEntity;
+    try{
+      let userEntity
 
-      // ===== Fetch entity if only username =====
-      if (!user_id && cleanUsername) {
-        const u = await client.getEntity(cleanUsername);
-        userEntity = u;
-        user_id = u.id;
-        access_hash = u.accessHash;
-      } else {
-       userEntity = new Api.InputUser({
-  userId: user_id,
-  accessHash: BigInt(access_hash)
-});
+      if(cleanUsername){
+        userEntity = await client.getEntity(cleanUsername)
+      }else{
+        userEntity = new Api.InputUser({
+          userId:user_id,
+          accessHash:BigInt(access_hash)
+        })
       }
 
-      const groupEntity = await client.getEntity(targetGroup);
+      const group=await client.getEntity(targetGroup)
 
-      // ===== Invite user =====
       await client.invoke(new Api.channels.InviteToChannel({
-        channel: groupEntity,
-        users: [userEntity]
-      }));
+        channel:group,
+        users:[userEntity]
+      }))
 
-      status = "success";
-      reason = "joined";
-      saveHistory = true;
+      status="success"
+      reason="joined"
+      saveHistory = true
 
-      acc.addCount = (acc.addCount || 0) + 1;
-      await update(ref(db, `accounts/${acc.id}`), { addCount: acc.addCount });
+      acc.addCount = (acc.addCount||0)+1
+      await update(ref(db,`accounts/${acc.id}`),{addCount:acc.addCount})
 
-      // ===== Random delay =====
-      await sleep(30000 + Math.floor(Math.random() * 10000));
+      await sleep(30000 + Math.floor(Math.random()*10000))
 
-    } catch (err) {
-      const wait = parseFlood(err);
-      if (wait) {
-        const until = Date.now() + wait * 1000;
-        acc.floodWaitUntil = until;
-        acc.status = "floodwait";
+    }catch(err){
+      const wait=parseFlood(err)
+      if(wait){
+        const until=Date.now()+wait*1000
+        acc.floodWaitUntil=until
+        acc.status="floodwait"
 
-        await update(ref(db, `accounts/${acc.id}`), {
-          status: "floodwait",
-          floodWaitUntil: until
-        });
+        await update(ref(db,`accounts/${acc.id}`),{
+          status:"floodwait",
+          floodWaitUntil:until
+        })
 
-        reason = `FloodWait ${wait}s | Ready ${new Date(until).toLocaleString()}`;
-        saveHistory = true;
-      } else {
-        reason = err.message;
-        saveHistory = false;
+        reason=`FloodWait ${wait}s | Ready ${new Date(until).toLocaleString()}`
+        saveHistory = true
+      }else{
+        reason=err.message
+        saveHistory = false
       }
     }
 
-    // ===== Push history safely =====
-    if (saveHistory) {
-      await push(ref(db, 'history'), {
-        username: cleanUsername || username || "unknown",
-        user_id: user_id || null,
+    if(saveHistory){
+      await push(ref(db,'history'),{
+        username:cleanUsername || username,
+        user_id,
         status,
         reason,
-        accountUsed: acc.phone || acc.id,
-        timestamp: Date.now()
-      });
+        accountUsed:acc.phone||acc.id,
+        timestamp:Date.now()
+      })
     }
 
-    res.json({ status, reason, accountUsed: acc.phone || acc.id });
+    res.json({status,reason,accountUsed:acc.phone||acc.id})
 
-  } catch (err) {
-    res.json({ status: "failed", reason: err.message, accountUsed: "unknown" });
+  }catch(err){
+    res.json({status:"failed",reason:err.message,accountUsed:"unknown"})
   }
-});
+})
 
 // ===== Status APIs =====
 app.get('/account-status', async(req,res)=>{
