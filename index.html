@@ -365,16 +365,39 @@ function nextAccount(data,startIndex){
 }
 
 async function autoJoinAllAccounts(group){
-  const accounts=await getAccounts()
+  const accounts = await getAccounts()
+
   for(const key of Object.keys(accounts)){
-    const acc=accounts[key]
-    if(acc.status!=="active") continue
+    const acc = accounts[key]
+    if(acc.status !== "active") continue
+
+    status.innerText = `Joining ${group} → ${acc.phone || acc.id}`
+
     try{
-      await fetch("/auto-join",{method:"POST",headers:{"Content-Type":"application/json"},body: JSON.stringify({group,account:key})})
-      log(`✅ ${acc.phone||acc.id} joined ${group}`)
+      const res = await fetch("/auto-join",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({group,account:key})
+      })
+
+      const result = await res.json()
+
+      if(result.status === "success"){
+        log(`✅ ${acc.phone || acc.id} joined ${group}`, null, "lime")
+      }else if(result.status === "already"){
+        log(`⏭️ ${acc.phone || acc.id} already in ${group}`, null, "orange")
+      }else{
+        log(`❌ ${acc.phone || acc.id} failed → ${result.reason}`, null, "red")
+      }
+
       await new Promise(r=>setTimeout(r,500))
-    }catch(e){ log(`❌ ${acc.phone||acc.id} failed: ${e.message}`) }
+
+    }catch(e){
+      log(`❌ ${acc.phone || acc.id} error: ${e.message}`, null, "red")
+    }
   }
+
+  status.innerText = `Join completed ✅`
 }
 
 const loadingBarWrapper = document.getElementById("loadingBarWrapper")
