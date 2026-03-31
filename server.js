@@ -354,7 +354,7 @@ app.post('/members', async (req, res) => {
       .map(p => ({
         user_id: p.id,
         username: p.username,
-        access_hash: p.access_hash
+        access_hash: p.access_hash ? p.access_hash.toString() : null
       }))
 
     res.json({
@@ -430,10 +430,10 @@ app.post('/add-member', async (req, res) => {
         user_id = u.id;
         access_hash = u.accessHash;
       } else {
-        userEntity = new Api.InputUser({
-          userId: user_id,
-          accessHash: BigInt(access_hash)
-        });
+       userEntity = new Api.InputUser({
+  userId: user_id,
+  accessHash: BigInt(access_hash)
+});
       }
 
       const groupEntity = await client.getEntity(targetGroup);
