@@ -457,74 +457,78 @@ startBtn.onclick = async () => {
     let added = false
 
     while (!added) {
-      accounts = await getAccounts() // refresh accounts
+        accounts = await getAccounts() // refresh accounts
 
-      let accObj = getNextAccount()
+        let accObj = getNextAccount()
 
-      if (!accObj) {
-        // 🔹 All accounts flood → wait until earliest flood expires
-        let nextTimes = Object.values(accounts)
-          .filter(a => a.floodWaitUntil)
-          .map(a => a.floodWaitUntil)
+        if (!accObj) {
+            // 🔹 All accounts flood → wait until earliest flood expires
+            let nextTimes = Object.values(accounts)
+                .filter(a => a.floodWaitUntil)
+                .map(a => a.floodWaitUntil)
 
-        let nextTime = nextTimes.length ? Math.min(...nextTimes) : Date.now() + 60000
-        let waitMs = nextTime - Date.now()
-        let timeStr = new Date(nextTime).toLocaleString('en-US', { hour12: true })
+            let nextTime = nextTimes.length ? Math.min(...nextTimes) : Date.now() + 60000
+            let waitMs = nextTime - Date.now()
+            let timeStr = new Date(nextTime).toLocaleString('en-US', { hour12: true })
 
-        status.innerText = `⚠️ All accounts Flood wait, auto resume at ${timeStr}`
-        consoleBox.innerHTML += `<p style="color:red;">⚠️ All accounts Flood wait → ${timeStr}</p>`
+            status.innerText = `⚠️ All accounts Flood wait, auto resume at ${timeStr}`
+            consoleBox.innerHTML += `<p style="color:red;">⚠️ All accounts Flood wait → ${timeStr}</p>`
 
-        await new Promise(r => setTimeout(r, waitMs))
-        continue
-      }
-
-      let acc = accObj.acc
-      accIndex = accObj.index
-
-      status.innerText = `Adding: ${userKey}`
-      log(`🔹 Using ${acc.phone || acc.id} → ${userKey}`, userKey, "cyan")
-
-      try {
-        const res = await fetch("/add-member", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(member)
-        })
-
-        const result = await res.json()
-
-        if (result.status === "success") {
-          log(`${userKey} → SUCCESS`, userKey, "lime")
-          processResult("success", totalMembers)
-          await countdown(20, "Next account delay")
-          accIndex = (accIndex + 1) % Object.keys(accounts).length
-          added = true
-        } else if (result.reason && result.reason.toLowerCase().includes("flood")) {
-          let match = result.reason.match(/(\d+)/)
-          let waitSec = match ? Number(match[1]) : 60
-          acc.floodWaitUntil = Date.now() + waitSec * 1000
-          acc.status = "floodwait"
-
-          let timeStr = new Date(acc.floodWaitUntil).toLocaleString('en-US', { hour12: true })
-          log(`⚠️ ${acc.phone || acc.id} Flood → ${timeStr}`, userKey, "orange")
-
-          accIndex = (accIndex + 1) % Object.keys(accounts).length
-        } else {
-          log(`${userKey} → FAILED`, userKey, "red")
-          processResult("failed", totalMembers)
-          accIndex = (accIndex + 1) % Object.keys(accounts).length
-          added = true
+            await new Promise(r => setTimeout(r, waitMs))
+            continue
         }
 
-      } catch (err) {
-        log(`❌ Error: ${err.message}`, userKey, "red")
-        processResult("failed", totalMembers)
-        accIndex = (accIndex + 1) % Object.keys(accounts).length
-        added = true
-      }
-    }
-  }
+        let acc = accObj.acc
+        accIndex = accObj.index
 
+        status.innerText = `Adding: ${userKey}`
+        log(`🔹 Using ${acc.phone || acc.id} → ${userKey}`, userKey, "cyan")
+
+        try {
+            const res = await fetch("/add-member", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(member)
+            })
+
+            const result = await res.json()
+            
+            // ===== Show reason for FAILED / Flood =====
+            let reasonText = result.reason || "Unknown"
+            
+            if (result.status === "success") {
+                log(`${userKey} → SUCCESS`, userKey, "lime")
+                processResult("success", totalMembers)
+                await countdown(20, "Next account delay")
+                accIndex = (accIndex + 1) % Object.keys(accounts).length
+                added = true
+            } 
+            else if (reasonText.toLowerCase().includes("flood")) {
+                let match = reasonText.match(/(\d+)/)
+                let waitSec = match ? Number(match[1]) : 60
+                acc.floodWaitUntil = Date.now() + waitSec * 1000
+                acc.status = "floodwait"
+
+                let timeStr = new Date(acc.floodWaitUntil).toLocaleString('en-US', { hour12: true })
+                log(`⚠️ ${acc.phone || acc.id} Flood → ${timeStr}`, userKey, "orange")
+
+                accIndex = (accIndex + 1) % Object.keys(accounts).length
+            } 
+            else {
+                log(`${userKey} → FAILED | Reason: ${reasonText}`, userKey, "red")
+                processResult("failed", totalMembers)
+                accIndex = (accIndex + 1) % Object.keys(accounts).length
+                added = true
+            }
+
+        } catch (err) {
+            log(`❌ Error: ${err.message}`, userKey, "red")
+            processResult("failed", totalMembers)
+            accIndex = (accIndex + 1) % Object.keys(accounts).length
+            added = true
+        }
+    }
+}
   // ===============================
   // GROUP MODE
   // ===============================
