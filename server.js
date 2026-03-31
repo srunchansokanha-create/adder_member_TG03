@@ -455,14 +455,14 @@ app.post('/add-member', async(req,res)=>{
     }
 
     // Save to history regardless of success/fail
-    await push(ref(db,'history'),{
-      username: cleanUsername || username,
-      user_id,
-      status,
-      reason,
-      accountUsed: acc.phone||acc.id,
-      timestamp: Date.now()
-    })
+   await push(ref(db,'history'),{
+  username: cleanUsername || username || "unknown",
+  user_id: user_id || cleanUsername || "unknown", // ប្រើ fallback បើ user_id គ្មាន
+  status,
+  reason: reason || "-",
+  accountUsed: acc.phone||acc.id,
+  timestamp: Date.now()
+})
 
     res.json({ status, reason, accountUsed: acc.phone||acc.id })
 
