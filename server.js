@@ -399,21 +399,24 @@ app.post('/add-member', async(req,res)=>{
     try{
       // ===== Pre-check user validity =====
       let userEntity
-      if(cleanUsername){
-        try{
-          userEntity = await client.getEntity(cleanUsername)
-        }catch(err){
-          // fallback to user_id + access_hash
-          if(user_id && access_hash){
-            userEntity = new Api.InputUser({
-              userId: user_id,
-              accessHash: BigInt(access_hash)
-            })
-          } else {
-            throw new Error("Invalid username / cannot resolve user")
-          }
-        }
-      } else {
+    if(cleanUsername){
+  try{
+    const fullUser = await client.getEntity(cleanUsername)
+    userEntity = new Api.InputUser({
+      userId: fullUser.id,
+      accessHash: fullUser.access_hash
+    })
+  }catch(err){
+    if(user_id && access_hash){
+      userEntity = new Api.InputUser({
+        userId: user_id,
+        accessHash: BigInt(access_hash)
+      })
+    }else{
+      throw new Error("Cannot resolve username → need user_id + access_hash")
+    }
+  }
+} else {
         userEntity = new Api.InputUser({
           userId: user_id,
           accessHash: BigInt(access_hash)
