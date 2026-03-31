@@ -396,7 +396,7 @@ app.post('/add-member', async(req,res)=>{
 
     for(const u of usernames){
       // ===== Validate =====
-      if(!/^(@[a-zA-Z0-9_]+|https:\/\/t\.me\/[a-zA-Z0-9_]+)$/.test(u)){
+      if(!/^(@?[a-zA-Z0-9_]+|https:\/\/t\.me\/[a-zA-Z0-9_]+)$/.test(u)){
         results.push({input:u, status:"failed", reason:"Invalid username or link", accountUsed:"none"})
         continue
       }
