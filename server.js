@@ -290,17 +290,14 @@ function getAvailableAccount(){
     let idx = (accIndex + i) % accounts.length
     let acc = accounts[idx]
 
-    if(
-      acc.status === "active" &&
-      acc.status !== "error" &&
-      (!acc.floodWaitUntil || acc.floodWaitUntil < now)
-    ){
-      accIndex = idx + 1 // 🔥 switch next account
+    // ✅ skip FloodWait or error
+    if(acc.status === "active" && (!acc.floodWaitUntil || acc.floodWaitUntil < now)){
+      accIndex = idx + 1 // switch next account next time
       return acc
     }
   }
 
-  return null // ❌ no account available
+  return null // no available account
 }
 
 // ===== Auto Join =====
@@ -334,8 +331,14 @@ app.post('/members', async (req, res) => {
   try {
     let { group, offset = 0, limit = 50 } = req.body
 
-    const acc = getAvailableAccount()
-    if (!acc) return res.json({ error: "No active account" })
+ const acc = getAvailableAccount()
+if(!acc){
+  return res.json({
+    status:"failed",
+    reason:"No active account available (all FloodWait/error)",
+    accountUsed:"none"
+  })
+}
 
     const client = await getClient(acc)
     const cleanGroup = normalizeGroup(group)
@@ -369,7 +372,6 @@ app.post('/members', async (req, res) => {
 })
 
 // ===== Add Member =====
-// ===== Add Member with input validation =====
 app.post('/add-member', async(req,res)=>{
   try{
     let {username,user_id,access_hash,targetGroup}=req.body
@@ -379,14 +381,6 @@ app.post('/add-member', async(req,res)=>{
       return res.json({
         status:"failed",
         reason:"Missing username or user_id",
-        accountUsed:"none"
-      })
-    }
-
-    if(username && !/^@?[a-zA-Z0-9_]+$|https:\/\/t\.me\/[a-zA-Z0-9_]+/.test(username)){
-      return res.json({
-        status:"failed",
-        reason:"Invalid username or link. Use @username or https://t.me/username",
         accountUsed:"none"
       })
     }
@@ -415,60 +409,88 @@ app.post('/add-member', async(req,res)=>{
       })
     }
 
-    let status="failed", reason="unknown"
-    let saveHistory = false // only save success or FloodWait
-
+    // ===== Add Member Logic =====
+    let status="failed", reason="unknown", saveHistory=false
     try{
+      const groupEntity = await client.getEntity(targetGroup)
       let userEntity
 
+      // ===== Step 1: Try username =====
       if(cleanUsername){
-        userEntity = await client.getEntity(cleanUsername)
-      }else{
+        try{
+          userEntity = await client.getEntity(cleanUsername)
+          await client.invoke(new Api.channels.InviteToChannel({
+            channel: groupEntity,
+            users: [userEntity]
+          }))
+          status="success"
+          reason="added via username"
+          saveHistory = true
+        }catch(errUser){
+          // ===== Step 2: Fallback to user_id + access_hash =====
+          if(user_id && access_hash){
+            try{
+              userEntity = new Api.InputUser({
+                userId: user_id,
+                accessHash: BigInt(access_hash)
+              })
+              await client.invoke(new Api.channels.InviteToChannel({
+                channel: groupEntity,
+                users: [userEntity]
+              }))
+              status="success"
+              reason="added via user_id fallback"
+              saveHistory = true
+            }catch(errId){
+              reason = errId.message
+            }
+          }else{
+            reason = errUser.message
+          }
+        }
+      } else if(user_id && access_hash){
+        // Only user_id provided
         userEntity = new Api.InputUser({
-          userId:user_id,
-          accessHash:BigInt(access_hash)
+          userId: user_id,
+          accessHash: BigInt(access_hash)
         })
+        await client.invoke(new Api.channels.InviteToChannel({
+          channel: groupEntity,
+          users: [userEntity]
+        }))
+        status="success"
+        reason="added via user_id only"
+        saveHistory = true
       }
 
-      const group=await client.getEntity(targetGroup)
+      // ===== Step 3: Update account addCount & delay =====
+      if(status==="success"){
+        acc.addCount = (acc.addCount||0)+1
+        await update(ref(db,`accounts/${acc.id}`),{addCount:acc.addCount})
+        await sleep(30000 + Math.floor(Math.random()*10000)) // 30–40s delay
+      }
 
-      await client.invoke(new Api.channels.InviteToChannel({
-        channel:group,
-        users:[userEntity]
-      }))
-
-      status="success"
-      reason="joined"
-      saveHistory = true
-
-      acc.addCount = (acc.addCount||0)+1
-      await update(ref(db,`accounts/${acc.id}`),{addCount:acc.addCount})
-
-      await sleep(30000 + Math.floor(Math.random()*10000))
-
-    }catch(err){
-      const wait=parseFlood(err)
+    }catch(errMain){
+      const wait=parseFlood(errMain)
       if(wait){
         const until=Date.now()+wait*1000
         acc.floodWaitUntil=until
         acc.status="floodwait"
-
         await update(ref(db,`accounts/${acc.id}`),{
           status:"floodwait",
           floodWaitUntil:until
         })
-
         reason=`FloodWait ${wait}s | Ready ${new Date(until).toLocaleString()}`
-        saveHistory = true
+        saveHistory=true
       }else{
-        reason=err.message
-        saveHistory = false
+        reason=errMain.message
       }
     }
 
+    // ===== Save History =====
     if(saveHistory){
       await push(ref(db,'history'),{
-        username:cleanUsername || username,
+        username:cleanUsername||username,
         user_id,
         status,
         reason,
