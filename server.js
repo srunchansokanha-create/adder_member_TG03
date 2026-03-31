@@ -308,13 +308,19 @@ async function autoJoin(client, group){
   const clean = normalizeGroup(group)
 
   try{
-    await client.getEntity(clean)
-  }catch{
+    // try join public group
+    await client.invoke(new Api.channels.JoinChannel({
+      channel: clean
+    }))
+  }catch(e){
     try{
+      // try private invite
       await client.invoke(
         new Api.messages.ImportChatInvite({hash:clean})
       )
-    }catch(e){}
+    }catch(err){
+      console.log(`❌ Join failed ${clean}:`, err.message)
+    }
   }
 }
 
@@ -394,7 +400,14 @@ app.post('/add-member', async(req,res)=>{
     const acc=getAvailableAccount()
     if(!acc) return res.json({status:"failed",reason:"All FloodWait",accountUsed:"none"})
 
-    const client=await getClient(acc)
+    const client = await getClient(acc)
+if(!client){
+  return res.json({
+    status:"failed",
+    reason:"Client init failed",
+    accountUsed: acc.phone || acc.id
+  })
+}
     await autoJoin(client,targetGroup)
 
     const cleanUsername = normalizeUsername(username)
@@ -404,8 +417,9 @@ app.post('/add-member', async(req,res)=>{
     const historyData = historySnap.val() || {}
 
     const exists = Object.values(historyData).some(h =>
-      h.username === cleanUsername || h.user_id === user_id
-    )
+  (cleanUsername && h.username === cleanUsername) ||
+  (user_id && String(h.user_id) === String(user_id))
+)
 
     if(exists){
       return res.json({
@@ -419,23 +433,57 @@ app.post('/add-member', async(req,res)=>{
     let saveHistory = false // only save success or FloodWait
 
     try{
-      let userEntity
 
-      if(cleanUsername){
-        userEntity = await client.getEntity(cleanUsername)
-      }else{
-        userEntity = new Api.InputUser({
-          userId:user_id,
-          accessHash:BigInt(access_hash)
-        })
-      }
+let userEntity
 
-      const group=await client.getEntity(targetGroup)
+// ===== USER RESOLVE =====
+if(cleanUsername){
+  try{
+    userEntity = await client.getEntity(cleanUsername)
 
-      await client.invoke(new Api.channels.InviteToChannel({
-        channel:group,
-        users:[userEntity]
-      }))
+    user_id = userEntity.id
+    access_hash = userEntity.access_hash
+
+  }catch(e){
+    return res.json({
+      status:"failed",
+      reason:"Username not found / invalid",
+      accountUsed: acc.phone || acc.id
+    })
+  }
+
+}else{
+  if(!user_id || !access_hash){
+    return res.json({
+      status:"failed",
+      reason:"Missing user_id or access_hash",
+      accountUsed: acc.phone || acc.id
+    })
+  }
+
+  userEntity = new Api.InputUser({
+    userId: user_id,
+    accessHash: BigInt(access_hash)
+  })
+}
+
+// ===== TARGET GROUP =====
+let group
+try{
+  group = await client.getEntity(targetGroup)
+}catch(e){
+  return res.json({
+    status:"failed",
+    reason:"Cannot access target group",
+    accountUsed: acc.phone || acc.id
+  })
+}
+
+// ===== ADD MEMBER =====
+await client.invoke(new Api.channels.InviteToChannel({
+  channel: group,
+  users: [userEntity]
+}))
 
       status="success"
       reason="joined"
@@ -467,14 +515,14 @@ app.post('/add-member', async(req,res)=>{
     }
 
     if(saveHistory){
-      await push(ref(db,'history'),{
-        username:cleanUsername || username,
-        user_id,
-        status,
-        reason,
-        accountUsed:acc.phone||acc.id,
-        timestamp:Date.now()
-      })
+     await push(ref(db,'history'),{
+  username: cleanUsername || username || null,
+  user_id: user_id || null, // ✅ FIX (no undefined)
+  status,
+  reason,
+  accountUsed: acc.phone || acc.id,
+  timestamp: Date.now()
+})
     }
 
     res.json({status,reason,accountUsed:acc.phone||acc.id})
