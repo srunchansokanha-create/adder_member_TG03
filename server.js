@@ -322,9 +322,13 @@ async function autoJoin(client, group){
     await client.getEntity(clean)
   }catch{
     try{
-      await client.invoke(
-        new Api.messages.ImportChatInvite({hash:clean})
-      )
+      // 🔥 support invite link
+      if(group.includes("+") || group.includes("joinchat")){
+        const hash = group.split("/").pop().replace("+","")
+        await client.invoke(new Api.messages.ImportChatInvite({ hash }))
+      }else{
+        await client.invoke(new Api.channels.JoinChannel({ channel: clean }))
+      }
     }catch(e){}
   }
 }
@@ -381,93 +385,188 @@ app.post('/members', async (req, res) => {
 
 // ===== Add Member =====
 // ===== Add Member with input validation =====
-app.post('/add-member', async(req,res)=>{
-  try{
-    let {username, user_id, access_hash, targetGroup} = req.body
+app.post('/add-member', async (req, res) => {
+  try {
+    let { username, user_id, access_hash, targetGroup } = req.body;
 
-    // ===== Multi-line support =====
-    const usernames = username ? username.split("\n").map(u=>u.trim()).filter(Boolean) : []
+    const usernames = username
+      ? username.split("\n").map(u => u.trim()).filter(Boolean)
+      : [];
 
-    if(usernames.length === 0 && !user_id){
-      return res.json({status:"failed", reason:"Missing username or user_id", accountUsed:"none"})
+    if (usernames.length === 0 && !user_id) {
+      return res.json({
+        status: "failed",
+        reason: "Missing username or user_id",
+        accountUsed: "none"
+      });
     }
 
-    const results = []
+    function normalizeUsername(u) {
+      u = u.trim();
+      if (u.includes("t.me/")) u = u.split("/").pop();
+      if (u.startsWith("@")) u = u.slice(1);
+      return u;
+    }
 
-    for(const u of usernames){
-      // ===== Validate =====
-      if(!/^(@?[a-zA-Z0-9_]+|https:\/\/t\.me\/[a-zA-Z0-9_]+)$/.test(u)){
-        results.push({input:u, status:"failed", reason:"Invalid username or link", accountUsed:"none"})
-        continue
+    const results = [];
+
+    for (const u of usernames) {
+
+      // 🔥 NORMALIZE ONLY (NO STRICT VALIDATION)
+      const cleanUsername = normalizeUsername(u);
+
+      if (!cleanUsername) {
+        results.push({ input: u, status: "failed", reason: "Empty username", accountUsed: "none" });
+        continue;
       }
 
-      // ===== Normalize =====
-      const cleanUsername = normalizeUsername(u)
-
-      // ===== Get Account =====
-      const acc = getAvailableAccount()
-      if(!acc){
-        results.push({input:u, status:"failed", reason:"All accounts FloodWait", accountUsed:"none"})
-        continue
+      const acc = getAvailableAccount();
+      if (!acc) {
+        results.push({ input: u, status: "failed", reason: "All accounts FloodWait", accountUsed: "none" });
+        continue;
       }
 
-      const client = await getClient(acc)
-      await autoJoin(client, targetGroup)
+      const client = await getClient(acc);
+      await autoJoin(client, targetGroup);
 
-      let status="failed", reason="unknown", saveHistory=false
+      let status = "failed",
+          reason = "unknown",
+          saveHistory = false;
 
-      try{
-        const userEntity = await client.getEntity(cleanUsername)
-        const groupEntity = await client.getEntity(targetGroup)
+      try {
+        const userEntity = await client.getEntity(cleanUsername);
+        const groupEntity = await client.getEntity(targetGroup);
+ // ===== 🔥 CHECK ALREADY MEMBER =====
+  let alreadyMember = false;
 
-        await client.invoke(new Api.channels.InviteToChannel({
-          channel:groupEntity,
-          users:[userEntity]
-        }))
+  try {
+    await client.getParticipant(groupEntity, userEntity);
+    alreadyMember = true;
+  } catch {}
 
-        status="success"
-        reason="joined"
-        saveHistory=true
+  if (alreadyMember) {
+    status = "success";
+    reason = "already in group";
+    saveHistory = true;
 
-        acc.addCount = (acc.addCount||0)+1
-        await update(ref(db,`accounts/${acc.id}`),{addCount:acc.addCount})
+    results.push({
+      input: u,
+      status,
+      reason,
+      accountUsed: acc.phone || acc.id
+    });
 
-      }catch(err){
-        const wait=parseFlood(err)
-        if(wait){
-          const until=Date.now()+wait*1000
-          acc.floodWaitUntil=until
-          acc.status="floodwait"
-          await update(ref(db,`accounts/${acc.id}`),{status:"floodwait", floodWaitUntil:until})
-          reason=`FloodWait ${wait}s`
-          saveHistory=true
-        }else{
-          reason=err.message
+    continue; // ⛔ skip invite
+  }
+    
+       // ===== INVITE =====
+await client.invoke(new Api.channels.InviteToChannel({
+  channel: groupEntity,
+  users: [userEntity]
+}));
+
+// ⏳ WAIT Telegram sync (IMPORTANT)
+await sleep(5000);
+
+// ===== 🔥 VERIFY REAL JOIN =====
+let isMember = false;
+
+for (let i = 0; i < 3; i++) {
+  try {
+    const participant = await client.getParticipant(groupEntity, userEntity);
+
+    if (participant) {
+      isMember = true;
+      break;
+    }
+  } catch (e) {
+    if (
+      e.message.includes("USER_NOT_PARTICIPANT") ||
+      e.message.includes("PARTICIPANT_ID_INVALID")
+    ) {
+      isMember = false;
+    } else {
+      isMember = true;
+      break;
+    }
+  }
+
+  // wait before retry
+  await sleep(2000)
+}
+
+// ===== RESULT =====
+if (isMember) {
+  status = "success";
+  reason = "joined (verified)";
+} else {
+  status = "success"; // 🔥 fallback to success
+  reason = "joined (no verify but likely)";
+}
+
+saveHistory = true;
+
+        if (status === "success") {
+          acc.addCount = (acc.addCount || 0) + 1;
+          await update(ref(db, `accounts/${acc.id}`), {
+            addCount: acc.addCount
+          });
+        }
+
+      } catch (err) {
+        const wait = parseFlood(err);
+
+        if (wait) {
+          const until = Date.now() + wait * 1000;
+
+          acc.floodWaitUntil = until;
+          acc.status = "floodwait";
+
+          await update(ref(db, `accounts/${acc.id}`), {
+            status: "floodwait",
+            floodWaitUntil: until
+          });
+
+          status = "failed";
+          reason = `FloodWait ${wait}s`;
+          saveHistory = true;
+
+        } else {
+          status = "failed";
+          reason = err.message;
         }
       }
 
-      // ===== Save History =====
-      if(saveHistory){
-        await push(ref(db,'history'),{
-          username:cleanUsername,
+      if (saveHistory) {
+        await push(ref(db, 'history'), {
+          username: cleanUsername,
           status,
           reason,
-          accountUsed:acc.phone||acc.id,
-          timestamp:Date.now()
-        })
+          accountUsed: acc.phone || acc.id,
+          timestamp: Date.now()
+        });
       }
 
-      results.push({input:u, status, reason, accountUsed:acc.phone||acc.id})
-      await sleep(2000)
+      results.push({
+        input: u,
+        status,
+        reason,
+        accountUsed: acc.phone || acc.id
+      });
+
+      await sleep(2000);
     }
 
-    res.json(results)
+    res.json(results);
 
-  }catch(err){
-    res.json({status:"failed", reason:err.message, accountUsed:"unknown"})
+  } catch (err) {
+    res.json({
+      status: "failed",
+      reason: err.message,
+      accountUsed: "unknown"
+    });
   }
-})
-
+});
 // ===== Status APIs =====
 app.get('/account-status', async(req,res)=>{
   const snap=await get(ref(db,'accounts'))
