@@ -315,20 +315,41 @@ function getAvailableAccount(){
 }
 
 // ===== Auto Join =====
-async function autoJoin(client, group){
-  const clean = normalizeGroup(group)
+async function autoJoin(client, group) {
+  const clean = normalizeGroup(group);
 
-  try{
-    await client.getEntity(clean)
-  }catch{
-    try{
-      await client.invoke(
-        new Api.messages.ImportChatInvite({hash:clean})
-      )
-    }catch(e){}
+  try {
+    // ព្យាយាម get entity ដំបូង
+    await client.getEntity(clean);
+  } catch (err) {
+    try {
+      // បើជា invite link
+      if (group.includes("joinchat") || group.includes("+")) {
+        const hash = group.split("/").pop().replace("+", "");
+        await client.invoke(new Api.messages.ImportChatInvite({ hash }));
+      } else {
+        // បើជា public channel/group
+        await client.invoke(new Api.channels.JoinChannel({ channel: clean }));
+      }
+    } catch (e) {
+      console.log(`Failed to join ${group}:`, e.message);
+    }
   }
 }
+// ===== Auto Join Route =====
+app.post('/auto-join', async (req, res) => {
+  try {
+    const { group } = req.body;
+    if (!group) return res.status(400).json({ error: "Missing group" });
 
+    // auto join all accounts
+    await autoJoinAllAccounts(group);
+
+    res.json({ success: true, message: `All accounts attempted to join ${group}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // ===== Auto Join All =====
 async function autoJoinAllAccounts(group){
   for(const acc of accounts){
