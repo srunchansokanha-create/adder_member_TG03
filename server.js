@@ -322,13 +322,9 @@ async function autoJoin(client, group){
     await client.getEntity(clean)
   }catch{
     try{
-      // 🔥 support invite link
-      if(group.includes("+") || group.includes("joinchat")){
-        const hash = group.split("/").pop().replace("+","")
-        await client.invoke(new Api.messages.ImportChatInvite({ hash }))
-      }else{
-        await client.invoke(new Api.channels.JoinChannel({ channel: clean }))
-      }
+      await client.invoke(
+        new Api.messages.ImportChatInvite({hash:clean})
+      )
     }catch(e){}
   }
 }
@@ -384,7 +380,6 @@ app.post('/members', async (req, res) => {
 })
 
 // ===== Add Member =====
-// ===== Add Member with input validation =====
 app.post('/add-member', async (req, res) => {
   try {
     let { username, user_id, access_hash, targetGroup } = req.body;
@@ -411,8 +406,6 @@ app.post('/add-member', async (req, res) => {
     const results = [];
 
     for (const u of usernames) {
-
-      // 🔥 NORMALIZE ONLY (NO STRICT VALIDATION)
       const cleanUsername = normalizeUsername(u);
 
       if (!cleanUsername) {
@@ -427,6 +420,8 @@ app.post('/add-member', async (req, res) => {
       }
 
       const client = await getClient(acc);
+
+      // 🔥 Auto join target group first
       await autoJoin(client, targetGroup);
 
       let status = "failed",
@@ -436,75 +431,66 @@ app.post('/add-member', async (req, res) => {
       try {
         const userEntity = await client.getEntity(cleanUsername);
         const groupEntity = await client.getEntity(targetGroup);
- // ===== 🔥 CHECK ALREADY MEMBER =====
-  let alreadyMember = false;
 
-  try {
-    await client.getParticipant(groupEntity, userEntity);
-    alreadyMember = true;
-  } catch {}
+        // ===== Check Already Member =====
+        let alreadyMember = false;
+        try {
+          await client.getParticipant(groupEntity, userEntity);
+          alreadyMember = true;
+        } catch {}
 
-  if (alreadyMember) {
-    status = "success";
-    reason = "already in group";
-    saveHistory = true;
+        if (alreadyMember) {
+          status = "success";
+          reason = "already in group";
+          saveHistory = true;
 
-    results.push({
-      input: u,
-      status,
-      reason,
-      accountUsed: acc.phone || acc.id
-    });
+          results.push({
+            input: u,
+            status,
+            reason,
+            accountUsed: acc.phone || acc.id
+          });
 
-    continue; // ⛔ skip invite
-  }
-    
-       // ===== INVITE =====
-await client.invoke(new Api.channels.InviteToChannel({
-  channel: groupEntity,
-  users: [userEntity]
-}));
+          continue; // skip invite
+        }
 
-// ⏳ WAIT Telegram sync (IMPORTANT)
-await sleep(5000);
+        // ===== Invite User =====
+        await client.invoke(new Api.channels.InviteToChannel({
+          channel: groupEntity,
+          users: [userEntity]
+        }));
 
-// ===== 🔥 VERIFY REAL JOIN =====
-let isMember = false;
+        await sleep(5000); // wait Telegram sync
 
-for (let i = 0; i < 3; i++) {
-  try {
-    const participant = await client.getParticipant(groupEntity, userEntity);
+        // ===== Verify Join =====
+        let isMember = false;
+        for (let i = 0; i < 3; i++) {
+          try {
+            const participant = await client.getParticipant(groupEntity, userEntity);
+            if (participant) {
+              isMember = true;
+              break;
+            }
+          } catch (e) {
+            if (e.message.includes("USER_NOT_PARTICIPANT") || e.message.includes("PARTICIPANT_ID_INVALID")) {
+              isMember = false;
+            } else {
+              isMember = true; // fallback
+              break;
+            }
+          }
+          await sleep(2000);
+        }
 
-    if (participant) {
-      isMember = true;
-      break;
-    }
-  } catch (e) {
-    if (
-      e.message.includes("USER_NOT_PARTICIPANT") ||
-      e.message.includes("PARTICIPANT_ID_INVALID")
-    ) {
-      isMember = false;
-    } else {
-      isMember = true;
-      break;
-    }
-  }
+        if (isMember) {
+          status = "success";
+          reason = "joined (verified)";
+        } else {
+          status = "success";
+          reason = "joined (no verify but likely)";
+        }
 
-  // wait before retry
-  await sleep(2000)
-}
-
-// ===== RESULT =====
-if (isMember) {
-  status = "success";
-  reason = "joined (verified)";
-} else {
-  status = "success"; // 🔥 fallback to success
-  reason = "joined (no verify but likely)";
-}
-
-saveHistory = true;
+        saveHistory = true;
 
         if (status === "success") {
           acc.addCount = (acc.addCount || 0) + 1;
@@ -514,11 +500,10 @@ saveHistory = true;
         }
 
       } catch (err) {
+        // ===== Flood Wait =====
         const wait = parseFlood(err);
-
         if (wait) {
           const until = Date.now() + wait * 1000;
-
           acc.floodWaitUntil = until;
           acc.status = "floodwait";
 
@@ -530,13 +515,13 @@ saveHistory = true;
           status = "failed";
           reason = `FloodWait ${wait}s`;
           saveHistory = true;
-
         } else {
           status = "failed";
           reason = err.message;
         }
       }
 
+      // ===== Save History =====
       if (saveHistory) {
         await push(ref(db, 'history'), {
           username: cleanUsername,
@@ -554,7 +539,7 @@ saveHistory = true;
         accountUsed: acc.phone || acc.id
       });
 
-      await sleep(2000);
+      await sleep(2000); // delay next member
     }
 
     res.json(results);
