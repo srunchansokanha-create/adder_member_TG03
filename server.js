@@ -389,6 +389,7 @@ app.post('/add-member', async (req, res) => {
   try {
     let { username, user_id, access_hash, targetGroup } = req.body;
 
+    // Split usernames by line and clean
     const usernames = username
       ? username.split("\n").map(u => u.trim()).filter(Boolean)
       : [];
@@ -401,6 +402,7 @@ app.post('/add-member', async (req, res) => {
       });
     }
 
+    // Normalize function
     function normalizeUsername(u) {
       u = u.trim();
       if (u.includes("t.me/")) u = u.split("/").pop();
@@ -410,9 +412,23 @@ app.post('/add-member', async (req, res) => {
 
     const results = [];
 
-    for (const u of usernames) {
+    // Fetch target group participants once to skip members quickly
+    const acc = getAvailableAccount();
+    if (!acc) {
+      return res.json([{ status: "failed", reason: "All accounts FloodWait", accountUsed: "none" }]);
+    }
 
-      // 🔥 NORMALIZE ONLY (NO STRICT VALIDATION)
+    const client = await getClient(acc);
+    await autoJoin(client, targetGroup);
+    const groupEntity = await client.getEntity(targetGroup);
+
+    // Set of usernames already in the group
+    const participants = await client.getParticipants(groupEntity);
+    const memberUsernames = new Set(
+      participants.map(p => p.username).filter(Boolean)
+    );
+
+    for (const u of usernames) {
       const cleanUsername = normalizeUsername(u);
 
       if (!cleanUsername) {
@@ -420,14 +436,16 @@ app.post('/add-member', async (req, res) => {
         continue;
       }
 
-      const acc = getAvailableAccount();
-      if (!acc) {
-        results.push({ input: u, status: "failed", reason: "All accounts FloodWait", accountUsed: "none" });
-        continue;
+      // 🔥 Skip immediately if already in group (no delay)
+      if (memberUsernames.has(cleanUsername)) {
+        results.push({
+          input: u,
+          status: "success",
+          reason: "already in group",
+          accountUsed: acc.phone || acc.id
+        });
+        continue; // ⛔ skip invite & delay
       }
-
-      const client = await getClient(acc);
-      await autoJoin(client, targetGroup);
 
       let status = "failed",
           reason = "unknown",
@@ -435,82 +453,50 @@ app.post('/add-member', async (req, res) => {
 
       try {
         const userEntity = await client.getEntity(cleanUsername);
-        const groupEntity = await client.getEntity(targetGroup);
- // ===== 🔥 CHECK ALREADY MEMBER =====
-  let alreadyMember = false;
 
-  try {
-    await client.getParticipant(groupEntity, userEntity);
-    alreadyMember = true;
-  } catch {}
+        // ===== INVITE =====
+        await client.invoke(new Api.channels.InviteToChannel({
+          channel: groupEntity,
+          users: [userEntity]
+        }));
 
-  if (alreadyMember) {
-    status = "success";
-    reason = "already in group";
-    saveHistory = true;
+        // ⏳ Wait Telegram sync only for actual invites
+        await sleep(5000);
 
-    results.push({
-      input: u,
-      status,
-      reason,
-      accountUsed: acc.phone || acc.id
-    });
+        // ===== VERIFY REAL JOIN =====
+        let isMember = false;
+        for (let i = 0; i < 3; i++) {
+          try {
+            const participant = await client.getParticipant(groupEntity, userEntity);
+            if (participant) {
+              isMember = true;
+              break;
+            }
+          } catch (e) {
+            if (e.message.includes("USER_NOT_PARTICIPANT") || e.message.includes("PARTICIPANT_ID_INVALID")) {
+              isMember = false;
+            } else {
+              await sleep(2000);
+              continue;
+            }
+          }
+          await sleep(2000);
+        }
 
-    continue; // ⛔ skip invite
-  }
-    
-       // ===== INVITE =====
-await client.invoke(new Api.channels.InviteToChannel({
-  channel: groupEntity,
-  users: [userEntity]
-}));
+        if (isMember) {
+          status = "success";
+          reason = "joined (verified)";
+          memberUsernames.add(cleanUsername); // prevent duplicate
+        } else {
+          status = "failed";
+          reason = "privacy / not allowed / not joined";
+        }
 
-// ⏳ WAIT Telegram sync (IMPORTANT)
-await sleep(5000);
-
-// ===== 🔥 VERIFY REAL JOIN =====
-let isMember = false;
-
-for (let i = 0; i < 3; i++) {
-  try {
-    const participant = await client.getParticipant(groupEntity, userEntity);
-
-    if (participant) {
-      isMember = true;
-      break;
-    }
-  } catch (e) {
-    if (
-      e.message.includes("USER_NOT_PARTICIPANT") ||
-      e.message.includes("PARTICIPANT_ID_INVALID")
-    ) {
-      isMember = false;
-    } else {
-      isMember = true;
-      break;
-    }
-  }
-
-  // wait before retry
-  await sleep(2000)
-}
-
-// ===== RESULT =====
-if (isMember) {
-  status = "success";
-  reason = "joined (verified)";
-} else {
-  status = "success"; // 🔥 fallback to success
-  reason = "joined (no verify but likely)";
-}
-
-saveHistory = true;
+        saveHistory = true;
 
         if (status === "success") {
           acc.addCount = (acc.addCount || 0) + 1;
-          await update(ref(db, `accounts/${acc.id}`), {
-            addCount: acc.addCount
-          });
+          await update(ref(db, `accounts/${acc.id}`), { addCount: acc.addCount });
         }
 
       } catch (err) {
@@ -554,7 +540,8 @@ saveHistory = true;
         accountUsed: acc.phone || acc.id
       });
 
-      await sleep(2000);
+      // ⏳ Delay ONLY for actual invites
+      if (!memberUsernames.has(cleanUsername)) await sleep(2000);
     }
 
     res.json(results);
