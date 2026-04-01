@@ -342,11 +342,24 @@ app.post('/auto-join', async (req, res) => {
     const { group } = req.body;
     if (!group) return res.status(400).json({ error: "Missing group" });
 
-    // auto join all accounts
-    await autoJoinAllAccounts(group);
+    let joinedCount = 0;
 
-    res.json({ success: true, message: `All accounts attempted to join ${group}` });
+    for (const acc of accounts) {
+      const client = await getClient(acc);
+      if (!client) continue; // skip unavailable accounts
+
+      try {
+        await autoJoin(client, group);
+        joinedCount++;
+        await sleep(1000);
+      } catch (e) {
+        console.log(`Failed for ${acc.phone}: ${e.message}`);
+      }
+    }
+
+    res.json({ success: true, joinedCount });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
