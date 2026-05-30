@@ -1,627 +1,682 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Telegram Auto-Add PRO MAX 🚀</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono&display=swap" rel="stylesheet">
-<style>
-*{box-sizing:border-box;}
-body{font-family:'JetBrains Mono',monospace;  background: linear-gradient(135deg,#203a43);
-color:#fff;width:100%;}
-.container{max-width:1000px;margin:auto;padding:15px;}
-section{background:linear-gradient(135deg,#047c8ec5,#036158fb);border-radius:20px;padding:20px;margin-bottom:20px;}
-.card-title{font-size:22px;font-weight:700;color:#00ff7f;text-align:center;margin-bottom:10px;}
-input,select{width:100%;padding:10px;margin-top:10px;border-radius:10px;background:#353333;color:#fff;border:none;}
-button{width:auto;padding:12px;margin-top:10px;border:none;border-radius:10px;font-weight:700;cursor:pointer;transition:0.2s;}
+import 'dotenv/config'
+import express from 'express'
+import { initializeApp } from 'firebase/app'
+import { getDatabase, ref, update, get, push } from 'firebase/database'
+import { TelegramClient, Api } from 'telegram'
+import { StringSession } from 'telegram/sessions/index.js'
+import path from 'path'
+import { fileURLToPath } from 'url'
 
-button:hover{opacity:0.85;}
-.success{color:#00ff7f;font-weight:700;}
-.failed{color:#ff4c4c;font-weight:700;}
-.skipped{color:orange;font-weight:700;}
-.avatar{width:25px;height:25px;border-radius:50%;}
-ul{list-style:none;padding:0;max-height:300px;overflow-y:auto;background:#111;border-radius:10px;margin-top:10px;}
-.console{background:#111;padding:10px;border-radius:10px;height:150px;overflow:auto;font-size:12px;margin-top:10px;}
-.progress-bar{background:#111;height:10px;border-radius:10px;margin-top:10px;}
-.progress{background:#00ff22;height:10px;width:0%;border-radius:10px;}
-table{width:100%;border-collapse:collapse;margin-top:10px;background:#111;border-radius:10px;display:block;overflow-x:auto;}
-th,td{padding:5px;border:1px solid #222;text-align:left;}
-th{background:#222;}
-.bar-buttons{display:flex;gap:10px;margin-bottom:15px;width: 50%;}
-.bar-buttons button{flex:1;border-radius:10px;}
-#btnAutoAddPage{background:#666e6a;color: #00ff7f;}
-#btnHistoryPage{background:#5f6263;color: orange;}
-.hidden{display:none;}
-tbody{display:block;max-height:300px;overflow-y:auto;}
-thead, tbody tr{display:table;width:100%;table-layout:fixed;}
+const app = express()
+app.use(express.json())
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)) }
 
-/* ===== Mobile Responsive ===== */
-@media screen and (max-width: 768px) {
-  .container {padding:10px;}
-  input, select, button {font-size:14px;padding:8px;}
-  .card-title {font-size:18px;}
-   .bar-buttons button,
-  #autoAddPage button,
-  button.inline-btn {
-    width: 100%;          /* ទទឹងពេញ container */
-    box-sizing: border-box;
+// ===== Firebase =====
+const firebaseConfig = {
+  apiKey: process.env.FIREBASE_API_KEY,
+  authDomain: process.env.FIREBASE_AUTH_DOMAIN,
+  databaseURL: process.env.FIREBASE_DB_URL
+}
+initializeApp(firebaseConfig)
+const db = getDatabase()
+
+// ===== Accounts =====
+const accounts = []
+const clients = {}
+setInterval(async () => {
+  for (const id in clients) {
+    try {
+      const client = clients[id]
+
+      if (!client.connected) {
+        console.log(`🧹 Remove ${id}`)
+        await client.disconnect()
+        delete clients[id]
+      }
+    } catch {
+      delete clients[id]
+    }
+  }
+}, 5 * 60 * 1000)
+// ===== Normalize Username =====
+function normalizeUsername(input){
+  if(!input) return null
+  let u = input.trim()
+  if(u.includes("t.me/")) u = u.split("/").pop()
+  return u.replace("@","").trim()
+}
+
+// ===== Normalize Group =====
+function normalizeGroup(group){
+  if(!group) return group
+  let g = group.trim()
+  if(g.includes("t.me/")) g = g.split("/").pop()
+  return g
+}
+
+// ===== Save Account =====
+async function saveAccountToFirebase(account){
+  try{
+    const snap = await get(ref(db,'accounts'))
+    const data = snap.val() || {}
+    const exists = Object.values(data).some(a => a.phone === account.phone)
+    if(exists) return false
+
+    await update(ref(db,`accounts/${account.id}`),{
+      phone:account.phone,
+      api_id:account.api_id,
+      api_hash:account.api_hash,
+      session:account.session,
+      status:"active",
+      floodWaitUntil:null,
+      addCount:0,
+      lastChecked:null,
+      createdAt:Date.now()
+    })
+
+    console.log(`✅ Saved ${account.phone}`)
+    return true
+  }catch(err){
+    console.log("❌ Save error:",err.message)
+    return false
+  }
+}
+
+// ===== Load ENV Accounts =====
+let i=1
+while(process.env[`TG_ACCOUNT_${i}_PHONE`]){
+  const api_id=Number(process.env[`TG_ACCOUNT_${i}_API_ID`])
+  const api_hash=process.env[`TG_ACCOUNT_${i}_API_HASH`]
+  const session=process.env[`TG_ACCOUNT_${i}_SESSION`]
+  const phone=process.env[`TG_ACCOUNT_${i}_PHONE`]
+
+  if(!api_id||!api_hash||!session){i++; continue}
+
+  const account={
+    phone, api_id, api_hash, session,
+    id:`TG_ACCOUNT_${i}`,
+    status:"pending",
+    floodWaitUntil:null,
+    lastChecked:null,
+    addCount:0
   }
 
-  table, thead, tbody, th, td, tr {display:block;}
-  thead tr {display:none;}
-  tbody tr {margin-bottom:10px;border:1px solid #222;border-radius:10px;padding:5px;background:#111;}
-  tbody td {display:flex;justify-content:space-between;padding:5px;border:none;font-size:13px;}
-  ul {max-height:200px;font-size:13px;}
-  .console {height:120px;font-size:12px;}
-  .progress-bar {height:8px;}
-  .progress {height:8px;}
-}
-  #loadingBarWrapper {
-  width: 100%;
-  height: 8px;
-  background: #111;
-  border-radius: 10px;
-  overflow: hidden;
-  margin-top: 10px;
-  position: relative;
+  accounts.push(account)
+  saveAccountToFirebase(account)
+  i++
 }
 
-#loadingContainer {
-  width: 100%;
-  height: 6px;
-  background: #1a1a1a;
-  border-radius: 10px;
-  overflow: hidden;
-  position: relative;
-}
+// ===== Telegram Client =====
+async function getClient(account){
 
-/* Bar ទី 1 */
-#loadingBar {
-  position: absolute;
-  width: 30%;
-  height: 100%;
-  left: -30%;
-  background: linear-gradient(90deg, transparent, #00ff7f, #00fbff, transparent);
-  border-radius: 10px;
-  filter: blur(1px);
-  box-shadow: 0 0 10px #00ff7f, 0 0 20px #d9ff00;
-  animation: moveBar1 1.4s ease-in-out infinite;
-}
+  // ===== 1. CLEAN DEAD CLIENT =====
+  if(clients[account.id]){
+    try{
+      if(!clients[account.id].connected){
+        console.log(`🔄 Reconnecting cached ${account.phone}`)
+        await clients[account.id].connect()
+      }
 
-/* Bar ទី 2 */
-#loadingBar::after {
-  content: "";
-  position: absolute;
-  width: 30%;
-  height: 100%;
-  left: -30%;
-  background: linear-gradient(90deg, transparent, #00e6ff, #00ffcc, transparent);
-  border-radius: 10px;
-  filter: blur(1px);
-  box-shadow: 0 0 10px #00e6ff, 0 0 20px #00ffcc;
-  animation: moveBar2 1.4s ease-in-out infinite;
-}
+      await clients[account.id].getMe()
+      return clients[account.id] // ✅ still valid
 
-/* Animation ទី 1 */
-@keyframes moveBar1 {
-  0% { left: -30%; opacity: 0; }
-  20% { opacity: 1; }
-  50% { left: 100%; opacity: 1; }
-  100% { left: 100%; opacity: 0; }
-}
-
-/* Animation ទី 2 (delay) */
-@keyframes moveBar2 {
-  0% { left: -30%; opacity: 0; }
-  20% { opacity: 1; }
-  50% { left: 100%; opacity: 1; }
-  100% { left: 100%; opacity: 0; }
-}
-
-#loadingBar::after {
-  animation-delay: 0.7s;
-}
-#statusBar{
-  margin-top:10px;
-  width: 100%;
-  background: linear-gradient(135deg,#9d9797c2,#6e6e62ca);
-  padding:10px 15px;
-  border-radius:12px;
-  text-align:center;
-  font-size:14px;
-  font-weight:600;
-  letter-spacing:0.5px;
-  box-shadow:0 0 10px rgba(119, 137, 2, 0.741);
-}
-
-#statusText{
-  color:#00ff7f;
-  transition: all 0.3s ease;
-}
-</style>
-</head>
-<body>
-<div class="container">
-
-
-
-<!-- ===== Auto Add ===== -->
-<section id="autoAddPage">
-
-  <div class="card-title">Auto Add Members</div>
-  <div class="bar-buttons">
-
-  <button id="btnHistoryPage">History & Accounts</button>
-</div>
- 
-  <!-- Multi-line textarea for usernames / links -->
-  <textarea id="source" placeholder="Enter multiple @usernames or Telegram links, one per line"
-            style="width:100%; height:100px; padding:10px; border-radius:10px; background:#f4f0f0dd; color:#0015ff; border:none; resize:vertical; margin-bottom:10px;"></textarea>
-
-  <input id="target" placeholder="Target Group" 
-         style="width:100%; padding:10px; border-radius:10px; background:#f4f0f0e7; color:#0015ff; border:none; margin-bottom:10px;">
-
-<button id="start" style="
-  display:block;
-  width:50%;
-  padding:12px;
-  border:none;
-  border-radius:10px;
-  font-weight:700;
-  color: rgb(248, 255, 250);
-  cursor:pointer;
-    background: linear-gradient(135deg,#ffcc02e7,#05ae73ba);
-  transition: transform 0.1s ease, box-shadow 0.1s ease; /* animation */
-">
-  START
-</button>
-
-  <!-- Loading Bar -->
-  <div id="loadingBarWrapper" class="hidden">
-    <div id="loadingBar"></div>
-  </div>
-
-  <!-- Status & Counter -->
-  <div id="statusBar">
-    <span id="status">Ready</span>
-  </div>
-  
-<div id="summaryBox" style="
-  margin-top:10px;
-  display:flex;
-  gap:15px;
-  font-weight:700;
-  font-size:14px;
-  flex-wrap:wrap;
-  font-size:14px;
-
-">
-  <span class="success" style="color:#00ff7f;">✅ Success: <span id="successCount">0</span></span>
-  <span class="failed" style="color:#ff4c4c;">| ❌ Failed: <span id="failedCount">0</span></span>
-  <span class="skipped" style="color:orange;">| ⏭️ Skipped: <span id="skippedCount">0</span></span>
-  <span class="total" style="color:#00ccff;">| Total: <span id="counter">0</span></span>
-</div>
-  <!-- Progress Bar -->
-  <div class="progress-bar">
-    <div id="progress" class="progress"></div>
-  </div>
-
-  <!-- Members Log & Console -->
-  <ul id="list"></ul>
-  <div class="console" id="console"></div>
-</section>
-
-<!-- ===== History & Accounts ===== -->
-<section id="historyPage" class="hidden">
-  <div class="card-title">Accounts Status</div>
-  <button onclick="logout()">Logout</button>
-  <div class="bar-buttons">
-  <button id="btnAutoAddPage">Auto Add Members</button>
-</div>
-<table id="accountTable">
-  <thead>
-    <tr>
-      <th>Phone</th>
-      <th>Status</th>
-      <th>FloodWait Until</th>
-      <th>Last Checked</th>
-      <th>Add Count</th>
-    </tr>
-  </thead>
-  <tbody id="accountBody"></tbody>
-</table>
-<button id="refreshAccounts">Refresh Accounts</button>
-
-<div class="card-title">History</div>
-<!-- ===== History Summary ===== -->
-<div id="historySummary" style="
-  margin-top:10px;
-  display:flex;
-  gap:15px;
-  font-weight:700;
-  font-size:14px;
-  flex-wrap:wrap;
-">
-  <span id="historySuccess" style="color:#00ff7f">✅ Success: 0</span>
-  <span id="historyFailed" style="color:#ff4c4c">| ❌ Failed: 0</span>
-  <span id="historySkipped" style="color:orange">| ⏭️ Skipped: 0</span>
-  <span id="historyTotal" style="color:#00ccff">| Total: 0</span>
-</div>
-<table id="historyTable">
-  <thead>
-    <tr>
-      <th>Username</th>
-      <th>Status</th>
-      <th>Reason</th>
-      <th>Account</th>
-      <th>Time</th>
-    </tr>
-  </thead>
-  <tbody id="historyBody"></tbody>
-</table>
-<button id="refreshHistory">Refresh History</button>
-</section>
-
-<script>
-const autoAddPage=document.getElementById("autoAddPage")
-const historyPage=document.getElementById("historyPage")
-document.getElementById("btnAutoAddPage").onclick=()=>{autoAddPage.classList.remove("hidden");historyPage.classList.add("hidden")}
-document.getElementById("btnHistoryPage").onclick=()=>{historyPage.classList.remove("hidden");autoAddPage.classList.add("hidden")}
-
-// ===== Live History =====
-const historyBody=document.getElementById("historyBody")
-let historySet=new Set()
-
-async function loadHistory(){
-  const res = await fetch("/history")
-  const data = await res.json()
-  historyBody.innerHTML = ""
-  historySet.clear()
-
-  // ===== summary counters =====
-  let success = 0, failed = 0, skipped = 0, total = 0
-
-  Object.values(data).forEach(h=>{
-    const tr=document.createElement("tr")
-    tr.innerHTML=`<td>${h.username||h.user_id}</td>
-      <td class="${h.status==="success"?"success":(h.status==="failed"?"failed":"skipped")}">${h.status}</td>
-      <td>${h.reason}</td>
-      <td>${h.accountUsed||"-"}</td>
-      <td>${new Date(h.timestamp).toLocaleString()}</td>`
-    historyBody.appendChild(tr)
-    if(h.user_id) historySet.add(h.user_id)
-    else if(h.username) historySet.add(h.username)
-
-    // ===== count summary =====
-    if(h.status==="success") success++
-    else if(h.status==="failed") failed++
-    else skipped++
-    total++
-  })
-
-  // ===== update summary UI =====
-  document.getElementById("historySuccess").innerText = `✅ Success: ${success}`
-  document.getElementById("historyFailed").innerText = `❌ Failed: ${failed}`
-  document.getElementById("historySkipped").innerText = `⏭️ Skipped: ${skipped}`
-  document.getElementById("historyTotal").innerText = `🧮 Total: ${total}`
-}
-document.getElementById("refreshHistory").onclick=loadHistory
-setInterval(loadHistory,5000)
-
-// ===== Accounts Table =====
-const accountBody=document.getElementById("accountBody")
-async function loadAccounts(){
-  const res=await fetch("/account-status")
-  const data=await res.json()
-  accountBody.innerHTML=""
-  Object.values(data).forEach(a=>{
-    const tr=document.createElement("tr")
-    tr.innerHTML=`<td>${a.phone}</td>
-      <td class="${a.status==="active"?"success":(a.status==="floodwait"?"skipped":"failed")}">${a.status}</td>
-      <td>${a.floodWaitUntil?a.floodWaitUntil?new Date(a.floodWaitUntil).toLocaleString():"-" : "-"}</td>
-      <td>${a.lastChecked?a.lastChecked?new Date(a.lastChecked).toLocaleString():"-" : "-"}</td>
-      <td>${a.addCount||0}</td>`
-    accountBody.appendChild(tr)
-  })
-}
-document.getElementById("refreshAccounts").onclick=loadAccounts
-setInterval(loadAccounts,5000)
-
-// ===== Auto Add =====
-const startBtn=document.getElementById("start")
-const status=document.getElementById("status")
-const counter=document.getElementById("counter")
-const progress=document.getElementById("progress")
-const list=document.getElementById("list")
-const consoleBox=document.getElementById("console")
-let offset=0,total=0,accIndex=0
-
-// ===== Variables Summary =====
-let successCount = 0;
-let failedCount = 0;
-let skippedCount = 0;
-
-function log(msg,user_id=null,color=null){
-    const li=document.createElement("li")
-    li.innerHTML=msg
-    if(color) li.style.color=color
-    list.appendChild(li)
-    list.scrollTop=list.scrollHeight
-    consoleBox.innerHTML+=msg+"<br>"
-    consoleBox.scrollTop=consoleBox.scrollHeight
-    if(user_id) historySet.add(user_id)
-}
-
-async function getAccounts(){ const res=await fetch("/account-status"); return await res.json() }
-function nextAccount(data,startIndex){
-  const now=Date.now()
-  const keys=Object.keys(data)
-  for(let i=0;i<keys.length;i++){
-    let idx=(startIndex+i)%keys.length
-    let acc=data[keys[idx]]
-    if(acc.status==="active" && (!acc.floodWaitUntil || acc.floodWaitUntil<now)) return {id:keys[idx], index:idx}
+    }catch(err){
+      console.log(`♻️ Removing dead client ${account.phone}`)
+      delete clients[account.id]
+    }
   }
+
+  // ===== 2. CREATE NEW CLIENT =====
+  const client = new TelegramClient(
+    new StringSession(account.session),
+    account.api_id,
+    account.api_hash,
+    {
+      connectionRetries: 5,
+      autoReconnect: false
+    }
+  )
+
+  try{
+    // ===== 3. CONNECT =====
+    await client.connect()
+
+    // ===== 4. VERIFY SESSION =====
+    await client.getMe()
+
+    // ===== 5. AUTO RECONNECT GUARD =====
+    client.addEventHandler(async () => {
+      try{
+        if(!client.connected){
+          console.log(`🔄 Auto reconnect ${account.phone}`)
+          await client.connect()
+        }
+      }catch(e){
+        console.log(`⚠️ Reconnect failed ${account.phone}`)
+      }
+    })
+
+    // ===== 6. SAVE SESSION (AUTO UPDATE) =====
+    const newSession = client.session.save()
+
+    if(newSession !== account.session){
+      account.session = newSession
+
+      await update(ref(db,`accounts/${account.id}`),{
+        session: newSession
+      })
+
+      console.log(`🔄 Session updated ${account.phone}`)
+    }
+
+    // ===== 7. MARK ACTIVE =====
+    account.status = "active"
+    account.lastChecked = Date.now()
+
+    await update(ref(db,`accounts/${account.id}`),{
+      status:"active",
+      lastChecked:account.lastChecked,
+      floodWaitUntil:null
+    })
+
+    // ===== 8. SAVE CLIENT =====
+    clients[account.id] = client
+
+    return client
+
+  }catch(err){
+
+    console.log(`❌ Client init failed ${account.phone}:`, err.message)
+
+    // ===== 9. HANDLE FLOODWAIT =====
+    const wait = parseFlood(err)
+
+    if(wait){
+      const until = Date.now() + wait * 1000
+
+      account.status = "floodwait"
+      account.floodWaitUntil = until
+
+      await update(ref(db,`accounts/${account.id}`),{
+        status:"floodwait",
+        floodWaitUntil: until,
+        error: err.message
+      })
+
+    }else{
+      // ===== 10. SESSION INVALID =====
+      account.status = "error"
+
+      await update(ref(db,`accounts/${account.id}`),{
+        status:"error",
+        error: err.message,
+        lastChecked: Date.now()
+      })
+    }
+
+    return null
+  }
+}
+
+// ===== Flood Parse =====
+function parseFlood(err){
+  const msg=err.message||""
+  const m1=msg.match(/FLOOD_WAIT_(\d+)/)
+  const m2=msg.match(/wait of (\d+) seconds/i)
+  if(m1) return Number(m1[1])
+  if(m2) return Number(m2[1])
   return null
 }
 
-async function autoJoinAllAccounts(group) {
-  const accounts = await getAccounts();
+// ===== Refresh Account =====
+async function refreshAccountStatus(account){
+  const now = Date.now()
 
-  for (const key of Object.keys(accounts)) {
-    const acc = accounts[key];
-    if (acc.status !== "active") continue;
+  if(account.floodWaitUntil && account.floodWaitUntil < now){
+    account.floodWaitUntil = null
+    account.status = "active"
 
-    try {
-      const res = await fetch("/auto-join", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ group, account: key })
-      });
+    await update(ref(db,`accounts/${account.id}`),{
+      status:"active",
+      floodWaitUntil:null
+    })
 
-      if (!res.ok) {
-        log(`❌ ${acc.phone || acc.id} failed to join ${group} | Status: ${res.status}`, null, "red");
-        continue;
-      }
-
-      // Try parsing JSON safely
-      let data;
-      try {
-        data = await res.json();
-      } catch (jsonErr) {
-        log(`❌ ${acc.phone || acc.id} returned invalid JSON`, null, "red");
-        continue;
-      }
-
-      if (data.error) {
-        log(`❌ ${acc.phone || acc.id} failed: ${data.error}`, null, "red");
-      } else {
-        log(`✅ ${acc.phone || acc.id} joined ${group}`);
-      }
-
-      // small delay between accounts to reduce rate limit issues
-      await new Promise(r => setTimeout(r, 500));
-
-    } catch (e) {
-      log(`❌ ${acc.phone || acc.id} failed: ${e.message}`, null, "red");
-    }
+    console.log(`✅ ${account.phone} back to active`)
   }
 }
 
-const loadingBarWrapper = document.getElementById("loadingBarWrapper")
+// ===== Check Account =====
+async function checkTGAccount(account){
+  try{
+    await refreshAccountStatus(account)
 
-startBtn.onclick = async () => {
-  const sourceValue = document.getElementById("source").value.trim()
-  const target = document.getElementById("target").value.trim()
+    // 👉 reuse client if exists
+    const client = await getClient(account)
+    if(!client) throw new Error("No client")
 
-  if (!sourceValue || !target) return alert("Enter usernames / links and target group")
+    await client.getMe()
 
-  await loadHistory()
+    account.status="active"
+    account.floodWaitUntil=null
+    account.lastChecked=Date.now()
 
-  offset = 0
-  total = 0
-  accIndex = 0
+    await update(ref(db,`accounts/${account.id}`),{
+      status:"active",
+      lastChecked:account.lastChecked,
+      floodWaitUntil:null
+    })
 
-  successCount = 0
-  failedCount = 0
-  skippedCount = 0
+  }catch(err){
+    const wait=parseFlood(err)
+    let status="error", floodUntil=null
 
-  list.innerHTML = ""
-  consoleBox.innerHTML = ""
+    if(wait){
+      status="floodwait"
+      floodUntil=Date.now()+wait*1000
+      account.floodWaitUntil=floodUntil
+      account.status="floodwait"
+    }
 
-  loadingBarWrapper.classList.remove("hidden")
-let totalUsers = 0
-  // 🔥 Detect group mode (single t.me link only)
-  let isGroupMode = sourceValue.includes("t.me/") && !sourceValue.includes("\n")
+    account.lastChecked=Date.now()
 
-  // ===== Normalize =====
-  function normalizeInput(u) {
-    u = u.trim()
-    if (u.includes("t.me/")) u = u.split("/").pop()
-    if (u.startsWith("@")) u = u.slice(1)
-    return u
+    await update(ref(db,`accounts/${account.id}`),{
+      status,
+      floodWaitUntil:floodUntil,
+      error:err.message,
+      lastChecked:account.lastChecked
+    })
   }
+}
 
-  function updateSummary(type) {
-    if (type === "success") successCount++
-    else if (type === "failed") failedCount++
-    else skippedCount++
+// ===== Auto Check =====
+let isChecking = false
+let index = 0
 
-    document.getElementById("successCount").innerText = successCount
-    document.getElementById("failedCount").innerText = failedCount
-    document.getElementById("skippedCount").innerText = skippedCount
+async function autoCheck() {
+  if (isChecking) return
+  isChecking = true
+
+  try {
+    if (!accounts.length) return
+
+    const acc = accounts[index % accounts.length]
+    index++
+
+    if (!acc) return
+
+    // 👉 only check if needed
+    if (acc.status === "active" && !acc.floodWaitUntil) {
+      await sleep(3000)
+      return
+    }
+
+    await checkTGAccount(acc)
+
+    await sleep(8000)
+
+  } catch (err) {
+    console.log("autoCheck error:", err.message)
+  } finally {
+    isChecking = false
   }
+}
 
-  function processResult(type) {
-    updateSummary(type)
-    total++
-    counter.innerText = total
-    progress.style.width = totalUsers ? ((total / totalUsers) * 100) + "%" : "0%"
+// 👉 slower interval (IMPORTANT)
+setInterval(autoCheck, 10 * 60 * 1000)
+
+// ===== Get Available Account =====
+let accIndex = 0
+
+function getAvailableAccount(){
+  const now = Date.now()
+
+  const available = accounts.filter(acc =>
+    acc.status === "active" &&
+    (!acc.floodWaitUntil || acc.floodWaitUntil < now)
+  )
+
+  if(!available.length) return null
+
+  const acc = available[accIndex % available.length]
+  accIndex++
+
+  return acc
+}
+
+// ===== Auto Join =====
+async function autoJoin(client, group){
+  const clean = normalizeGroup(group)
+
+  try{
+    await client.getEntity(clean)
+  }catch{
+    try{
+      await client.invoke(
+        new Api.messages.ImportChatInvite({hash:clean})
+      )
+    }catch(e){}
   }
+}
 
-  let accounts = await getAccounts()
+// ===== Auto Join All =====
+const MAX_JOIN = 3
 
-  function getNextAccount() {
-    const keys = Object.keys(accounts)
-    const now = Date.now()
-    for (let i = 0; i < keys.length; i++) {
-      let idx = (accIndex + i) % keys.length
-      let acc = accounts[keys[idx]]
-      if (acc.status === "active" && (!acc.floodWaitUntil || acc.floodWaitUntil < now)) {
-        return { acc, index: idx }
+async function autoJoinAllAccounts(group){
+  const selected = accounts.slice(0, MAX_JOIN)
+
+  for(const acc of selected){
+    let client = null
+    try{
+      client = await getClient(acc)
+      if(!client) continue
+
+      await autoJoin(client, group)
+
+      await sleep(2000)
+    }catch(e){
+      console.log("join error", acc.phone)
+    }
+
+    try { await client?.disconnect() } catch {}
+  }
+}
+
+// ===== Get Members =====
+app.post('/members', async (req, res) => {
+  try {
+    let { group, offset = 0, limit = 50 } = req.body
+
+    // 🔒 កំណត់ limit អតិបរមា
+    limit = Math.min(limit, 50)
+
+    const acc = getAvailableAccount()
+    if (!acc) {
+      return res.json({ error: "No active account" })
+    }
+
+    const client = await getClient(acc)
+    if (!client) {
+      return res.json({ error: "Client failed" })
+    }
+
+    const cleanGroup = normalizeGroup(group)
+
+    // 👉 auto join
+    await autoJoin(client, cleanGroup)
+
+    const entity = await client.getEntity(cleanGroup)
+
+    // ⏱️ delay បន្តិច កាត់បន្ថយ flood
+    await sleep(1500)
+
+    // 🔁 retry system (ការពារ error)
+    let participants = []
+    for (let i = 0; i < 3; i++) {
+      try {
+        participants = await client.getParticipants(entity, {
+          offset,
+          limit,
+          aggressive: false// ⚡ លឿន
+        })
+        break
+      } catch (e) {
+        await sleep(2000)
       }
     }
-    return null
+
+    const members = participants
+      .filter(p => !p.bot)
+      .map(p => ({
+        user_id: p.id,
+        username: p.username,
+        access_hash: p.access_hash
+      }))
+
+    return res.json({
+      members,
+      nextOffset: offset + participants.length,
+      hasMore: participants.length === limit
+    })
+
+  } catch (err) {
+    return res.json({ error: err.message })
   }
-
-  // ===== ADD WITH ROTATION =====
-  async function addWithRotation(member) {
-    const userKey = member.username || member.user_id
-    let added = false
-
-    while (!added) {
-      accounts = await getAccounts()
-      let accObj = getNextAccount()
-
-      if (!accObj) {
-        let nextTimes = Object.values(accounts).filter(a => a.floodWaitUntil).map(a => a.floodWaitUntil)
-        let nextTime = nextTimes.length ? Math.min(...nextTimes) : Date.now() + 60000
-        let waitMs = nextTime - Date.now()
-        let timeStr = new Date(nextTime).toLocaleString('en-US', { hour12: true })
-
-        status.innerText = `⚠️ All accounts Flood wait → ${timeStr}`
-        log(`⚠️ All accounts Flood wait → ${timeStr}`, userKey, "red")
-        await new Promise(r => setTimeout(r, waitMs))
-        continue
-      }
-
-      let acc = accObj.acc
-      accIndex = accObj.index
-
-      status.innerText = `Adding: ${userKey}`
-      log(`🔹 Using ${acc.phone || acc.id} → ${userKey}`, userKey, "cyan")
-
-      try {
-       const res = await fetch("/add-member", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(member)
 })
 
-if (!res.ok) {
-  throw new Error(`Server ${res.status}`)
-}
+// ===== Add Member =====
+app.post('/add-member', async (req, res) => {
+  try {
+    let { username, user_id, access_hash, targetGroup } = req.body
 
-        const data = await res.json()
-        const result = Array.isArray(data) ? data[0] : data
-
-        if (result.status === "success") {
-          log(`✅ ${userKey} → SUCCESS`, userKey, "lime")
-          processResult("success")
-          await countdown(20, "Next account delay")
-          accIndex = (accIndex + 1) % Object.keys(accounts).length
-          added = true
-
-        } else if (result.reason && result.reason.toLowerCase().includes("flood")) {
-          let match = result.reason.match(/(\d+)/)
-          let waitSec = match ? Number(match[1]) : 60
-          acc.floodWaitUntil = Date.now() + waitSec * 1000
-          acc.status = "floodwait"
-          let timeStr = new Date(acc.floodWaitUntil).toLocaleString('en-US', { hour12: true })
-          log(`⚠️ ${acc.phone || acc.id} Flood → ${timeStr}`, userKey, "orange")
-          accIndex = (accIndex + 1) % Object.keys(accounts).length
-
-        } else {
-          log(`❌ ${userKey} → FAILED (${result.reason})`, userKey, "red")
-          processResult("failed")
-          accIndex = (accIndex + 1) % Object.keys(accounts).length
-          added = true
-        }
-
-      } catch (err) {
-        log(`❌ Error: ${err.message}`, userKey, "red")
-        processResult("failed")
-        accIndex = (accIndex + 1) % Object.keys(accounts).length
-        added = true
-      }
-    }
-  }
-
-  // ===============================
-  // GROUP MODE
-  // ===============================
-  if (isGroupMode) {
-    status.innerText = "Joining source group..."
-    await autoJoinAllAccounts(sourceValue)
-
-    status.innerText = "Joining target group..."
-    await autoJoinAllAccounts(target)
-
-    while (true) {
-      status.innerText = "Fetching members..."
-      const res = await fetch("/members", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ group: sourceValue, offset, limit: 50 })
+    // ================= VALIDATION =================
+    if (!username && !user_id) {
+      return res.json({
+        status: "failed",
+        reason: "Missing username or user_id",
+        accountUsed: "none"
       })
+    }
 
-      const data = await res.json()
-      if (data.error) break
+    const acc = getAvailableAccount()
+    if (!acc) {
+      return res.json({
+        status: "failed",
+        reason: "No available account (FloodWait)",
+        accountUsed: "none"
+      })
+    }
 
-      const members = data.members || []
-      totalUsers += members.length
-      if (!members.length) break
-      offset = data.nextOffset
+    const client = await getClient(acc)
 
-      for (const m of members) {
-        const userKey = m.user_id || m.username
-        if (historySet.has(userKey)) {
-          log(`⏭️ Skipped ${userKey}`, userKey, "orange")
-          processResult("skipped")
-          continue
-        }
-        await addWithRotation({
-          username: m.username,
-          user_id: m.user_id,
-          access_hash: m.access_hash,
-          targetGroup: target
+    // ================= GROUP RESOLVE =================
+    let groupEntity
+    try {
+      groupEntity = await client.getEntity(targetGroup)
+    } catch {
+      return res.json({
+        status: "failed",
+        reason: "Invalid target group",
+        accountUsed: acc.phone
+      })
+    }
+
+    // ================= USER RESOLVE =================
+    const cleanUsername = normalizeUsername(username)
+
+    let userEntity
+    try {
+      if (cleanUsername) {
+        userEntity = await client.getEntity(cleanUsername)
+      } else {
+        userEntity = new Api.InputUser({
+          userId: user_id,
+          accessHash: BigInt(access_hash)
         })
       }
+    } catch {
+      return res.json({
+        status: "skipped",
+        reason: "User not found / private",
+        accountUsed: acc.phone
+      })
     }
-  }
 
-  // ===============================
-  // TEXT MODE
-  // ===============================
-  else {
-    status.innerText = "Joining target group..."
-    await autoJoinAllAccounts(target)
+    // ================= CHECK EXISTING =================
+    try {
+      await client.getParticipant(groupEntity, userEntity)
 
-    const userList = sourceValue.split("\n").map(u => normalizeInput(u)).filter(Boolean)
-    totalUsers = userList.length
+      return res.json({
+        status: "skipped",
+        reason: "Already in group",
+        accountUsed: acc.phone
+      })
+    } catch {}
 
-    for (const u of userList) {
-      if (historySet.has(u)) {
-        log(`⏭️ Skipped ${u}`, u, "orange")
-        processResult("skipped")
-        continue
+    // ================= INVITE =================
+    try {
+      await client.invoke(new Api.channels.InviteToChannel({
+        channel: groupEntity,
+        users: [userEntity]
+      }))
+    } catch (err) {
+      const wait = parseFlood(err)
+
+      if (wait) {
+        const until = Date.now() + wait * 1000
+
+        acc.status = "floodwait"
+        acc.floodWaitUntil = until
+
+        await update(ref(db, `accounts/${acc.id}`), {
+          status: "floodwait",
+          floodWaitUntil: until
+        })
+
+        return res.json({
+          status: "floodwait",
+          reason: `FloodWait ${wait}s`,
+          accountUsed: acc.phone
+        })
       }
-      await addWithRotation({ username: u, targetGroup: target })
+
+      return res.json({
+        status: "failed",
+        reason: err.message,
+        accountUsed: acc.phone
+      })
     }
+
+    // ================= PRO VERIFY ENGINE =================
+    await sleep(7000)
+
+    let joined = false
+
+    // 1. PRIMARY CHECK
+    try {
+      await client.getParticipant(groupEntity, userEntity)
+      joined = true
+    } catch {}
+
+    // 2. RETRY CHECK
+    if (!joined) {
+      for (let i = 0; i < 3; i++) {
+        await sleep(3000)
+
+        try {
+          await client.getParticipant(groupEntity, userEntity)
+          joined = true
+          break
+        } catch {}
+      }
+    }
+
+    // 3. BACKUP CHECK
+    if (!joined && user_id) {
+      try {
+        const list = await client.getParticipants(groupEntity, {
+          limit: 200
+        })
+
+        joined = list.some(p => p.id == user_id)
+      } catch {}
+    }
+
+    // ================= RESULT =================
+    if (joined) {
+      acc.addCount = (acc.addCount || 0) + 1
+
+      await update(ref(db, `accounts/${acc.id}`), {
+        addCount: acc.addCount
+      })
+
+      await push(ref(db, 'history'), {
+        username: cleanUsername || username,
+        user_id,
+        status: "success",
+        reason: "joined (verified)",
+        accountUsed: acc.phone,
+        timestamp: Date.now()
+      })
+
+      await sleep(20000 + Math.floor(Math.random() * 10000))
+
+      return res.json({
+        status: "success",
+        reason: "joined (verified)",
+        accountUsed: acc.phone
+      })
+    }
+
+    return res.json({
+      status: "failed",
+      reason: "invite sent but not confirmed",
+      accountUsed: acc.phone
+    })
+
+  } catch (err) {
+    return res.json({
+      status: "failed",
+      reason: err.message,
+      accountUsed: "unknown"
+    })
   }
+})
+app.post('/auto-join', async (req, res) => {
+  try {
+    const { group, account } = req.body
 
-  loadingBarWrapper.classList.add("hidden")
-  status.innerText = "Finished ✅"
-}
-// ===== Countdown Function =====
-async function countdown(seconds, message) {
-  for (let i = seconds; i > 0; i--) {
-    status.innerText = `${message}: ${i}s`
-    await new Promise(r => setTimeout(r, 1000))
+    const acc = accounts.find(a => a.id === account)
+    if (!acc) {
+      return res.status(404).json({ error: "Account not found" })
+    }
+
+    const client = await getClient(acc)
+
+    const clean = normalizeGroup(group)
+
+    try {
+      await client.getEntity(clean)
+    } catch {
+      await client.invoke(
+        new Api.messages.ImportChatInvite({ hash: clean })
+      )
+    }
+
+    return res.json({
+      status: "joined",
+      account: acc.phone
+    })
+
+  } catch (err) {
+    return res.status(500).json({
+      error: err.message
+    })
   }
-}
+})
+// ===== Status APIs =====
+app.get('/account-status', async(req,res)=>{
+  const snap=await get(ref(db,'accounts'))
+  res.json(snap.val()||{})
+})
 
+app.get('/history', async(req,res)=>{
+  const snap=await get(ref(db,'history'))
+  res.json(snap.val()||{})
+})
+// ===== Admin Login =====
+app.post('/api/login', (req,res)=>{
+  const { username, password } = req.body
+  if(username === process.env.ADMIN_USERNAME && password === process.env.ADMIN_PASSWORD){
+    return res.json({ success:true })
+  }
+  res.status(401).json({ success:false, error:"Invalid credentials" })
+})
+// ===== Frontend =====
+const __filename=fileURLToPath(import.meta.url)
+const __dirname=path.dirname(__filename)
 
-</script>
-</div>
-</body>
-</html>
+app.use(express.static(__dirname))
+app.get('/', (req,res)=>res.sendFile(path.join(__dirname,'index.html')))
+
+const PORT=process.env.PORT||3000
+app.listen(PORT,()=>console.log(`🚀 Server running on ${PORT}`))
